@@ -51,7 +51,8 @@ if __name__ == "__main__":
     parser.add_argument("--revoke", action="store_true", help="remove admin access instead of granting it")
     args = parser.parse_args()
 
-    if not asyncio.run(main(args.email, is_admin=not args.revoke)):
+    # psycopg's async mode can't use the ProactorEventLoop that windows defaults to
+    if not asyncio.run(main(args.email, is_admin=not args.revoke), loop_factory=asyncio.SelectorEventLoop):
         sys.exit(f"No active user with email {args.email}, register them first ❌")
 
     print(f"{args.email} is {'no longer' if args.revoke else 'now'} an admin ✅")

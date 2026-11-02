@@ -42,6 +42,9 @@ class Product(Base):
     link: Mapped[str] = mapped_column(String) # the stockx link
     brand: Mapped[str] = mapped_column(String)
     description: Mapped[str] = mapped_column(String)
+    # for practicing migrations: uncomment after the initial migration, then generate a second one
+    # server_default fills in existing rows, default only applies to new rows sqlalchemy inserts
+    # likes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class OrderItem(Base):

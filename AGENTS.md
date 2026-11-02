@@ -6,19 +6,21 @@ This file provides guidance to Codex when working with code in this repository.
 
 SNEAKRS. — a sneaker marketplace with a FastAPI backend and a React frontend, developed as two independent, unconnected projects in one repo (no shared config, no Docker/orchestration tying them together):
 
-- `Backend/` — FastAPI + SQLAlchemy 2.0 (async, `aiosqlite` driver), managed with `uv`, Python >=3.14.
+- `Backend/` — FastAPI + SQLAlchemy 2.0 (async) on PostgreSQL (`psycopg` driver, tests use SQLite through `aiosqlite`), schema managed with Alembic, managed with `uv`, Python >=3.14.
 - `Frontend/` — React 19 + Vite, React Router 7, plain JS/JSX (no TypeScript), managed with `npm`.
 
 The project is early/in-progress: the backend API is largely implemented, but most frontend pages are stubs not yet wired to it (see Known issues below).
 
 ## Commands
 
-### Backend (run from `Backend/` — `config.py` loads `.env` (`SECRET_KEY` etc.) relative to the current directory; the SQLite path itself is anchored to `Backend/`)
+### Backend (run from `Backend/` — `config.py` loads `.env` (`SECRET_KEY`, `DATABASE_URL` etc.) relative to the current directory)
 
 - Install deps: `uv sync`
 - Run dev server: `uv run fastapi dev main.py` (or `uv run uvicorn main:app --reload`) — serves on port 8000
-- Seed the product catalog from `sneakers.json`: `uv run python harvest_scripts/seed.py`
-- Run tests: `uv run pytest` (in `tests/`; the app runs on an async engine over a temp-file SQLite DB, fixtures use a sync engine on the same file). No ruff/black/mypy config exists yet.
+- Database: Postgres runs in the `sneaker-db` docker container on port 5432 (`docker start sneaker-db`), open a prompt with `docker exec -it sneaker-db psql my_database -U sneakrsuser`
+- Apply migrations: `uv run alembic upgrade head`. After changing a model: `uv run alembic revision --autogenerate -m "message"`, review the generated file in `alembic/versions/`, then upgrade. Undo the last one: `uv run alembic downgrade -1`
+- Seed the product catalog from `sneakers.json` (after migrating): `uv run python harvest_scripts/seed.py`
+- Run tests: `uv run pytest` (in `tests/`; the app runs on an async engine over a temp-file SQLite DB, fixtures use a sync engine on the same file and create tables with `create_all`, so tests need neither docker nor migrations; `conftest.py` restores the timezone SQLite drops from `PasswordResetToken.expires_at`). No ruff/black/mypy config exists yet.
 
 ### Frontend (run from `Frontend/`)
 
@@ -32,8 +34,9 @@ The project is early/in-progress: the backend API is largely implemented, but mo
 
 ### Backend structure
 
-- `main.py` — app entrypoint. `GET /` returns the home feed (the first page of products, by calling the products handler). Creates tables in the `lifespan` startup via `await conn.run_sync(Base.metadata.create_all)` and disposes the engine on shutdown (schema is created directly from the models — **there is no Alembic/migration tool**; changing a model requires dropping/recreating the SQLite file). Configures CORS for `http://localhost:5173` and `http://localhost:3000`. Mounts the routers. Exception handlers are async and delegate to FastAPI's `http_exception_handler` / `request_validation_exception_handler`.
-- `database.py` — async engine (`sqlite+aiosqlite:///` + `my_database.db` anchored to `Backend/`), `AsyncSessionLocal` (`expire_on_commit=False`), and the async `get_db()` dependency generator.
+- `main.py` — app entrypoint. `GET /` returns the home feed (the first page of products, by calling the products handler). The `lifespan` only disposes the engine on shutdown; tables are created and changed by Alembic migrations, never by `create_all` in the app. Configures CORS for `http://localhost:5173` and `http://localhost:3000`. Mounts the routers. Exception handlers are async and delegate to FastAPI's `http_exception_handler` / `request_validation_exception_handler`.
+- `database.py` — async engine from `settings.database_url`, `AsyncSessionLocal` (`expire_on_commit=False`), and the async `get_db()` dependency generator.
+- `alembic/` + `alembic.ini` — migrations. `alembic/env.py` takes the url from `settings.database_url` (`sqlalchemy.url` stays blank in the ini) and imports `models` so autogenerate can compare `Base.metadata` to the database; migration files live in `alembic/versions/`.
 - `models.py` — SQLAlchemy 2.0 ORM models (`Mapped`/`mapped_column` style): `User`, `Product`, `CartItem`, `Order`, `OrderItem`, `PasswordResetToken`.
 - `schemas.py` — Pydantic v2 request/response models, using `ConfigDict(from_attributes=True)` to serialize ORM objects directly.
 - `auth.py` — password hashing (`pwdlib`, argon2), JWT creation/verification (`pyjwt`, settings from `config.py`/`.env`), and the `CurrentUser` / `AdminUser` dependencies. Soft-deleted users are rejected even with a valid token.
@@ -48,7 +51,7 @@ The project is early/in-progress: the backend API is largely implemented, but mo
 - `email_utils.py` — async SMTP sending (`aiosmtplib`, `MAIL_*` settings from `.env`; dev uses a Mailtrap sandbox) and the password reset email, whose HTML body is the Jinja template `templates/email/password_reset.html` (email only, the forgot/reset pages belong in the React app). Reset links point at `<FRONTEND_URL>/reset-password?token=...`, so `FRONTEND_URL` is the React dev server. Tests never send mail: the autouse `outbox` fixture in `conftest.py` replaces `send_email` and records each message.
 - `harvest_scripts/` — standalone tooling, not part of the API. Each script resolves paths from `Backend/`, so it runs from any cwd:
   - `harvest.py` — async `httpx` script for the pckt.sh cached StockX catalog. It reads `API_KEY`/`BASE_URL` from `Backend/.env`, which `config.py` shares through `extra="ignore"`. Phase 1 searches each of `SEARCH_QUERIES` one page at a time, round-robin, keeping priced sneakers keyed by product id. Phase 2 fetches each product's details for gender and description. It is throttled to the free plan's 1 req/s, retries on 429, stops on 401/402/403, and is capped by `MAX_REQUESTS` (0.4 credits each). It writes `sneakers.json` only if something was harvested.
-  - `seed.py` — loads `sneakers.json` into the `products` table, only when the table is empty. Price comes from `lowest_ask`, falling back to `avg_price`. Missing gender defaults to `"unisex"` and missing description to `""`.
+  - `seed.py` — loads `sneakers.json` into the `products` table, only when the table is empty. It doesn't create tables, so run the migrations first. Price comes from `lowest_ask`, falling back to `avg_price`. Missing gender defaults to `"unisex"` and missing description to `""`.
   - `make_admin.py` (`uv run python harvest_scripts/make_admin.py <email> [--revoke]`, the only way to grant admin, there's deliberately no endpoint for it).
 
 **Conventions to follow when adding endpoints:**
@@ -72,5 +75,6 @@ The project is early/in-progress: the backend API is largely implemented, but mo
 
 ## Known issues (be aware of before extending nearby code)
 
+- `psycopg`'s async mode can't use the `ProactorEventLoop` that Windows defaults to. Anything calling `asyncio.run` against the database passes `loop_factory=asyncio.SelectorEventLoop` (`alembic/env.py`, `seed.py`, `make_admin.py`). Uvicorn only picks the compatible loop with reload on, so on Windows run the server with `fastapi dev` or `uvicorn --reload`.
 - `Frontend/src/contexts/SearchContext.jsx`'s `SearchProvider` is never mounted in `main.jsx`/`App.jsx`, but `NavBar` calls `useSearchContext()` — this throws at runtime once the nav bar renders unless a provider is added higher in the tree.
 - `hash_password`/`verify_password` in `Backend/auth.py` are CPU-bound and called directly from async routes, so each hash briefly blocks the event loop. Fine at this scale; wrap them in `run_in_threadpool` if it ever matters.

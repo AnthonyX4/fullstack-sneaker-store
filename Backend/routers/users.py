@@ -197,8 +197,7 @@ async def reset_password(
     if not reset_token:
         raise invalid_reset_token()
 
-    # sqlite doesn't store the timezone, so expires_at comes back naive, it was saved in utc
-    if reset_token.expires_at.replace(tzinfo=UTC) < datetime.now(UTC):
+    if reset_token.expires_at < datetime.now(UTC):
         await db.delete(reset_token)
         await db.commit()
         raise invalid_reset_token()

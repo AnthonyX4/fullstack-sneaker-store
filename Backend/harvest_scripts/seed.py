@@ -12,13 +12,11 @@ sys.path.insert(0, str(BACKEND_DIR)) # so database/models are importable regardl
 
 from sqlalchemy import select, func
 
-from database import AsyncSessionLocal, engine, Base # the stuff we need from the database
+from database import AsyncSessionLocal, engine # the stuff we need from the database
 from models import Product # the actual table we need to work with
 
 async def seedDB (): # async only because the database engine is async now, it still runs once, separate from the main application
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all) # will check the database and create anything that hasn't been created yet
-
+    # the tables have to exist already, alembic creates them (uv run alembic upgrade head)
     with open(BACKEND_DIR / 'sneakers.json', 'r', encoding='utf-8') as file:
         sneaker_data = json.load(file) # the data exists outside of this block (I'm too Java brained, scope is different in python)
 
@@ -49,4 +47,4 @@ async def seedDB (): # async only because the database engine is async now, it s
     await engine.dispose() # close the connection before asyncio.run shuts the event loop down
 
 if __name__ == "__main__":
-    asyncio.run(seedDB())
+    asyncio.run(seedDB(), loop_factory=asyncio.SelectorEventLoop) # psycopg's async mode can't use the ProactorEventLoop that windows defaults to

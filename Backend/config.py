@@ -8,6 +8,8 @@ class Settings(BaseSettings):
         extra="ignore", # .env is shared with harvest_scripts (API_KEY, BASE_URL), so skip keys not declared here
     ) # automatically load the below values from our .env file
 
+    database_url: str # no default, the app shouldn't start without being told which database to use
+
     secret_key: SecretStr # this type displays *** instead of actual value when printing or logging
     algorithm: str = "HS256" # default value
     access_token_expire_minutes: int = 30 # default value

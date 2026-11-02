@@ -4,9 +4,11 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from datetime import UTC
+
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import attributes, sessionmaker
 from sqlalchemy.pool import NullPool
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -14,9 +16,9 @@ sys.path.insert(0, str(BACKEND_DIR)) # so main/models/database are importable wh
 
 import database
 
-# swap in a throwaway database BEFORE main is imported, main's lifespan create_all must never touch my_database.db
+# swap in a throwaway sqlite database BEFORE main is imported, tests must never touch the real postgres database
 # it's a temp file rather than in-memory so two engines can share it:
-#   - the app gets an async (aiosqlite) engine, same as production
+#   - the app gets an async (aiosqlite) engine, async like production
 #   - fixtures get a plain sync engine, so tests can set up and inspect data without an event loop
 TEST_DB_DIR = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 TEST_DB_PATH = Path(TEST_DB_DIR.name) / "test.db"
@@ -39,6 +41,13 @@ import models
 import email_utils
 
 PASSWORD = "password123"
+
+
+# postgres returns timezone-aware datetimes but sqlite drops the timezone,
+# so put utc back on the one column the routes compare against datetime.now(UTC)
+@event.listens_for(models.PasswordResetToken, "load")
+def restore_expires_at_timezone(token, _context):
+    attributes.set_committed_value(token, "expires_at", token.expires_at.replace(tzinfo=UTC)) # committed, so it isn't seen as a change to save
 
 
 async def get_test_db():

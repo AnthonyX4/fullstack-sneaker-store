@@ -6,7 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 
 # Database
-from database import engine, Base, get_db
+from database import engine, get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -26,9 +26,7 @@ from routers import admins, cart, orders, products, users
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Startup: table creation in database (create_all is sync, run_sync runs it on the async connection)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Startup: nothing, tables are created and changed by alembic migrations (uv run alembic upgrade head)
     yield
     # Shutdown
     await engine.dispose()

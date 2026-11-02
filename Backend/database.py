@@ -1,15 +1,10 @@
-from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-DB_PATH = Path(__file__).resolve().parent / "my_database.db" # anchored to Backend/ so the db resolves the same regardless of cwd
-SQLITE_ALCHEMY_LINK = f"sqlite+aiosqlite:///{DB_PATH}" # aiosqlite is the async driver for sqlite
+from config import settings
 
 # connect sqlalchemy to database
-engine = create_async_engine(
-    SQLITE_ALCHEMY_LINK,
-    connect_args={"check_same_thread": False},
-)
+engine = create_async_engine(settings.database_url)
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
