@@ -14,6 +14,9 @@ from config import settings
 # Dependencies
 from auth import get_current_admin
 
+# same hard/soft delete rules and picture cleanup as a user deleting their own account
+from routers.users import delete_user_account
+
 # Schemas
 from schemas import (
     AdminUserDetail,
@@ -93,6 +96,32 @@ async def get_user(user_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     return existing_user
+
+# DELETE, Delete a user's account
+# hard delete if they have no orders, otherwise soft delete + anonymize (same as DELETE /api/users/{user_id})
+@router.delete(
+    "/users/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_user(user_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+
+    existing_user = await db.get(models.User, user_id)
+
+    if not existing_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if existing_user.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is already deleted")
+
+    # admin is granted only by make_admin.py, so it's removed the same way, one admin (or a stolen admin token)
+    # can't wipe out the others, this also covers an admin deleting themselves here by accident
+    if existing_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admins can't be deleted, revoke admin with make_admin.py --revoke first",
+        )
+
+    await delete_user_account(existing_user, db)
 
 # GET, Access one page of every user's orders, newest first, optionally only one status
 @router.get(

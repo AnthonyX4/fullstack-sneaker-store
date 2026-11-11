@@ -9,7 +9,8 @@ from starlette.concurrency import run_in_threadpool # runs a sync function in a 
 
 # Images
 from PIL import UnidentifiedImageError
-from image_utils import delete_profile_image, process_profile_image
+from botocore.exceptions import BotoCoreError, ClientError
+from image_utils import delete_profile_image, process_profile_image, upload_profile_image
 
 from database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -351,7 +352,11 @@ async def update_user(user_update: UserUpdate, user: OwnedUser, db: Annotated[As
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_user(user: OwnedUser, db: Annotated[AsyncSession, Depends(get_db)]):
+    await delete_user_account(user, db)
 
+
+# shared by the route above (a user deleting themselves) and DELETE /api/admin/users/{user_id}
+async def delete_user_account(user: models.User, db: AsyncSession) -> None:
     result = await db.execute(
         select(models.Order.order_id).where(models.Order.user_id == user.user_id).limit(1)
     )
@@ -374,7 +379,7 @@ async def delete_user(user: OwnedUser, db: Annotated[AsyncSession, Depends(get_d
     await db.commit()
 
     # file is removed only after the commit succeeds, if the commit failed the user would still point at it
-    delete_profile_image(old_filename)
+    await delete_profile_image(old_filename)
 
 
 # PATCH, upload/replace profile picture
@@ -395,11 +400,21 @@ async def upload_profile_picture(file: UploadFile, user: OwnedUser, db: Annotate
 
     # image processing is CPU bound, so it runs in a thread instead of on the event loop
     try:
-        new_filename = await run_in_threadpool(process_profile_image, content)
+        processed_bytes, new_filename = await run_in_threadpool(process_profile_image, content)
     except UnidentifiedImageError as err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid image file. Please upload a valid image (JPEG, PNG, GIF, WebP).",
+        ) from err
+
+    # upload before touching the db, if S3 fails the user keeps their current picture
+    # ClientError: AWS answered with an error (access denied, no such bucket...), BotoCoreError: never got an answer (no credentials, network)
+    try:
+        await upload_profile_image(processed_bytes, new_filename)
+    except (BotoCoreError, ClientError) as err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload image. Please try again.",
         ) from err
 
     old_filename = user.image_file
@@ -409,7 +424,7 @@ async def upload_profile_picture(file: UploadFile, user: OwnedUser, db: Annotate
     await db.refresh(user)
 
     # old file is deleted after the commit, deleting first would leave the user pointing at a missing file if the commit failed
-    delete_profile_image(old_filename)
+    await delete_profile_image(old_filename)
 
     return user
 
@@ -433,7 +448,7 @@ async def delete_profile_picture(user: OwnedUser, db: Annotated[AsyncSession, De
     await db.commit()
     await db.refresh(user)
 
-    delete_profile_image(old_filename)
+    await delete_profile_image(old_filename)
 
     return user
 

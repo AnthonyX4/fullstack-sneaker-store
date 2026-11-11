@@ -37,6 +37,7 @@ TestSession = sessionmaker(autocommit=False, autoflush=False, bind=test_sync_eng
 import main
 import models
 import email_utils
+import image_utils
 
 PASSWORD = "password123"
 
@@ -65,6 +66,22 @@ def outbox(monkeypatch):
 
     monkeypatch.setattr(email_utils, "send_email", fake_send_email)
     return sent
+
+
+@pytest.fixture(autouse=True)
+def s3_bucket(monkeypatch):
+    # a dict standing in for the bucket ({key: bytes}), .env has real AWS credentials and tests must never use them
+    bucket = {}
+
+    def fake_upload(file_bytes, key):
+        bucket[key] = file_bytes
+
+    def fake_delete(key):
+        bucket.pop(key, None) # like S3, deleting a missing key isn't an error
+
+    monkeypatch.setattr(image_utils, "_upload_to_s3", fake_upload)
+    monkeypatch.setattr(image_utils, "_delete_from_s3", fake_delete)
+    return bucket
 
 
 @pytest.fixture

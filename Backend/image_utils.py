@@ -1,16 +1,42 @@
+import logging
 import uuid
 from io import BytesIO
-from pathlib import Path
 
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from PIL import Image, ImageOps
+from starlette.concurrency import run_in_threadpool
 
-PROFILE_PICS_DIR = Path(__file__).resolve().parent / "media" / "profile_pics" # anchored to Backend/, same folder main.py serves at /media
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+# every object key starts with this prefix, the IAM policy only allows put/delete under profile_pics/*
+PROFILE_PICS_PREFIX = "profile_pics/"
 
 
-# CPU bound (decode, resize, encode), so these are plain sync functions
-# async routes call process_profile_image through run_in_threadpool so it doesn't block the event loop
-def process_profile_image(content: bytes) -> str:
-    """Square crop to 300x300, save as a jpg under a random name, and return that name."""
+def _get_s3_client():
+    return boto3.client(
+        "s3",
+        region_name=settings.s3_region,
+        aws_access_key_id=(
+            settings.s3_access_key_id.get_secret_value()
+            if settings.s3_access_key_id
+            else None
+        ),
+        aws_secret_access_key=(
+            settings.s3_secret_access_key.get_secret_value()
+            if settings.s3_secret_access_key
+            else None
+        ),
+        endpoint_url=settings.s3_endpoint_url,
+    )
+
+
+# CPU bound (decode, resize, encode), so this is a plain sync function
+# the upload route calls it through run_in_threadpool so it doesn't block the event loop
+def process_profile_image(content: bytes) -> tuple[bytes, str]:
+    """Square crop to 300x300 and encode as jpeg. Returns the jpeg bytes and a random filename for them."""
     with Image.open(BytesIO(content)) as original: # raises UnidentifiedImageError if the bytes aren't an image
         img = ImageOps.exif_transpose(original) # phone photos store rotation in exif, apply it so the picture isn't sideways
 
@@ -21,19 +47,42 @@ def process_profile_image(content: bytes) -> str:
             img = img.convert("RGB")
 
         filename = f"{uuid.uuid4().hex}.jpg" # never use the uploaded filename, it's user controlled and may collide
-        filepath = PROFILE_PICS_DIR / filename
 
-        PROFILE_PICS_DIR.mkdir(parents=True, exist_ok=True)
+        # encoded into memory instead of a file, the bytes go straight to S3
+        output = BytesIO()
+        img.save(output, "JPEG", quality=85, optimize=True)
 
-        img.save(filepath, "JPEG", quality=85, optimize=True)
-
-    return filename
+    return output.getvalue(), filename
 
 
-def delete_profile_image(filename: str | None) -> None:
+# boto3 is a sync library (blocking network calls), so these run in a worker thread through the async wrappers below
+def _upload_to_s3(file_bytes: bytes, key: str) -> None:
+    s3 = _get_s3_client()
+    s3.upload_fileobj(
+        BytesIO(file_bytes),
+        settings.s3_bucket_name,
+        key,
+        ExtraArgs={"ContentType": "image/jpeg"}, # without it S3 serves the file as binary/octet-stream and browsers download it instead of showing it
+    )
+
+
+def _delete_from_s3(key: str) -> None:
+    s3 = _get_s3_client()
+    s3.delete_object(Bucket=settings.s3_bucket_name, Key=key)
+
+
+async def upload_profile_image(file_bytes: bytes, filename: str) -> None:
+    """Raises BotoCoreError/ClientError if the upload fails, the caller decides what the user sees."""
+    await run_in_threadpool(_upload_to_s3, file_bytes, f"{PROFILE_PICS_PREFIX}{filename}")
+
+
+async def delete_profile_image(filename: str | None) -> None:
+    """Best effort: always called after the db commit, so a failure only leaves an orphan object in the bucket."""
     if filename is None:
         return
 
-    filepath = PROFILE_PICS_DIR / filename
-    if filepath.exists():
-        filepath.unlink()
+    try:
+        await run_in_threadpool(_delete_from_s3, f"{PROFILE_PICS_PREFIX}{filename}")
+    except (BotoCoreError, ClientError):
+        # the db no longer points at the file, so failing the request here would report an error for a change that succeeded
+        logger.exception("Failed to delete profile picture %s from S3", filename)

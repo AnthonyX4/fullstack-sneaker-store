@@ -1,4 +1,7 @@
+from io import BytesIO
+
 import pytest
+from PIL import Image
 
 from conftest import place_order, register_and_login
 
@@ -7,6 +10,7 @@ ADMIN_ROUTES = [
     ("get", "/api/admin/users/1"),
     ("get", "/api/admin/orders"),
     ("patch", "/api/admin/orders/1/status"),
+    ("delete", "/api/admin/users/1"),
 ]
 
 
@@ -67,6 +71,71 @@ def test_user_detail_shows_that_users_orders(client, admin_headers, user_headers
 def test_user_detail_missing_user_is_404(client, admin_headers):
     response = client.get("/api/admin/users/999", headers=admin_headers)
     assert response.status_code == 404
+
+
+# --- deleting users ---
+
+def test_delete_user_without_orders_is_a_hard_delete(client, admin_headers, user_headers):
+    me = client.get("/api/users/me", headers=user_headers).json()
+
+    assert client.delete(f"/api/admin/users/{me['user_id']}", headers=admin_headers).status_code == 204
+    assert client.get(f"/api/admin/users/{me['user_id']}", headers=admin_headers).status_code == 404
+    assert client.get("/api/users/me", headers=user_headers).status_code == 401 # their token stops working
+
+
+def test_delete_user_with_orders_is_a_soft_delete(client, admin_headers, user_headers, product):
+    order = place_order(client, user_headers, product.product_id)
+    me = client.get("/api/users/me", headers=user_headers).json()
+
+    assert client.delete(f"/api/admin/users/{me['user_id']}", headers=admin_headers).status_code == 204
+
+    detail = client.get(f"/api/admin/users/{me['user_id']}", headers=admin_headers).json()
+    assert detail["deleted_at"] is not None
+    assert detail["email"] == f"deleted-{me['user_id']}@invalid.example"
+    assert [o["order_id"] for o in detail["orders"]] == [order["order_id"]] # order history is kept
+    assert client.get("/api/users/me", headers=user_headers).status_code == 401
+
+
+def test_delete_user_removes_their_picture(client, admin_headers, user_headers, s3_bucket):
+    me = client.get("/api/users/me", headers=user_headers).json()
+    picture = client.patch(
+        f"/api/users/{me['user_id']}/picture",
+        files={"file": ("pic.png", _png(), "image/png")},
+        headers=user_headers,
+    )
+    assert picture.status_code == 200
+    assert len(s3_bucket) == 1
+
+    assert client.delete(f"/api/admin/users/{me['user_id']}", headers=admin_headers).status_code == 204
+    assert s3_bucket == {}
+
+
+def test_delete_missing_user_is_404(client, admin_headers):
+    assert client.delete("/api/admin/users/999", headers=admin_headers).status_code == 404
+
+
+def test_delete_already_deleted_user_is_400(client, admin_headers, user_headers, product):
+    place_order(client, user_headers, product.product_id) # soft delete, so the row is still there
+    me = client.get("/api/users/me", headers=user_headers).json()
+    assert client.delete(f"/api/admin/users/{me['user_id']}", headers=admin_headers).status_code == 204
+
+    response = client.delete(f"/api/admin/users/{me['user_id']}", headers=admin_headers)
+    assert response.status_code == 400
+    assert response.json()["detail"] == "User is already deleted"
+
+
+def test_cannot_delete_an_admin(client, admin_headers):
+    # covers both deleting another admin and deleting yourself, admin is only removed through make_admin.py
+    admin = client.get("/api/users/me", headers=admin_headers).json()
+    response = client.delete(f"/api/admin/users/{admin['user_id']}", headers=admin_headers)
+    assert response.status_code == 403
+    assert client.get("/api/users/me", headers=admin_headers).status_code == 200
+
+
+def _png() -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (50, 50), "red").save(buffer, "PNG")
+    return buffer.getvalue()
 
 
 # --- viewing orders ---

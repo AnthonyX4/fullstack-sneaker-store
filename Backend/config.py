@@ -14,6 +14,13 @@ class Settings(BaseSettings):
 
     max_upload_size_bytes: int = 5 * 1024 * 1024 # 5MB, profile picture uploads larger than this are rejected
 
+    # S3 (profile pictures are stored in the bucket, not on the server's disk)
+    s3_bucket_name: str # required, the app won't start without it
+    s3_region: str = "us-east-1"
+    s3_access_key_id: SecretStr | None = None # None lets boto3 fall back to its own credential lookup (~/.aws, an IAM role...)
+    s3_secret_access_key: SecretStr | None = None
+    s3_endpoint_url: str | None = None # only for S3 compatible services (MinIO, Cloudflare R2), None means real AWS
+
     # pagination: the page size used when a request doesn't pass ?limit=
     products_per_page: int = 12 # divides evenly into a 2, 3 or 4 column sneaker grid
     items_per_page: int = 10 # cart items, orders and the admin lists

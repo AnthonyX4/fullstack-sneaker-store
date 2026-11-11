@@ -17,7 +17,7 @@ from schemas import PaginatedProductsResponse
 # Cross Origin Resource Sharing (front and backend connection)
 from fastapi.middleware.cors import CORSMiddleware
 
-# Static files (serves images etc. from the media and static folders)
+# Static files (serves the default profile picture etc. from the static folder)
 from fastapi.staticfiles import StaticFiles
 
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -66,11 +66,9 @@ async def home(db: Annotated[AsyncSession, Depends(get_db)]):
     # reuses the products handler so the home feed and /api/products can't drift apart
     return await products.get_sneakers(db, skip=0, limit=settings.products_per_page)
 
-# Media files: GET /media/<path> returns the file at media/<path> (public, no auth)
-# "media" is relative to the directory the server is started from, so run it from Backend/
-app.mount("/media", StaticFiles(directory="media"), name="media")
-
 # Static files: GET /static/<path> returns the file at static/<path> (public, no auth)
+# "static" is relative to the directory the server is started from, so run it from Backend/
+# uploaded profile pictures aren't served from here, they live in S3 (see image_utils.py)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
